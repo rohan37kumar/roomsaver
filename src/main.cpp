@@ -2,15 +2,40 @@
 #include "core/gfx_util.h"
 #include "core/settings.h"
 #include "core/config.h"
+#include "core/monitors.h"
 #include "core/log.h"
 #include "app.h"
 
 #include <windows.h>
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+
+// Dev-only: ROOMSAVER_TEST_LAYOUT="x,y,w,h;x,y,w,h" puts the room into those
+// rectangles of the window (client pixels, top-left origin) instead of filling
+// it, so multi-screen layouts can be checked with --selftest on one monitor.
+static std::vector<SceneRect> test_layout_from_env() {
+    std::vector<SceneRect> out;
+    const char* e = std::getenv("ROOMSAVER_TEST_LAYOUT");
+    if (!e) return out;
+    std::string s = e;
+    size_t pos = 0;
+    while (pos <= s.size()) {
+        size_t end = s.find(';', pos);
+        std::string part = s.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        SceneRect r;
+        if (std::sscanf(part.c_str(), "%d,%d,%d,%d", &r.x, &r.y, &r.w, &r.h) == 4)
+            out.push_back(r);
+        if (end == std::string::npos) break;
+        pos = end + 1;
+    }
+    return out;
+}
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     log_init();
+    // Real pixel coordinates on scaled / mixed-DPI setups (monitor rects, window size).
+    enable_dpi_awareness();
     AppOptions opts = parse_command_line();
 
     if (opts.mode == Mode::Config)
@@ -19,6 +44,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     // Load user settings (registry) and hand them to the engine before init.
     Settings settings = Settings::load();
 
+    // Fullscreen: pick which screens show the room (the rest go black).
+    if (opts.mode == Mode::FullScreen) {
+        const auto monitors = enumerate_monitors();
+        const auto chosen = pick_room_monitors(monitors, (int)settings.displayMode,
+                                               settings.displays);
+        for (const MonitorInfo& m : monitors)
+            LOGI("Screen %d: '%ls' %ldx%ld at (%ld,%ld)%s%s", m.number, m.name.c_str(),
+                 m.rect.right - m.rect.left, m.rect.bottom - m.rect.top,
+                 m.rect.left, m.rect.top, m.primary ? " main" : "",
+                 std::any_of(chosen.begin(), chosen.end(),
+                             [&](const MonitorInfo& c) { return c.id == m.id; }) ? " [room]" : "");
+        for (const MonitorInfo& m : chosen) opts.roomScreens.push_back(m.rect);
+    }
+
     Platform platform;
     if (!platform.create(opts)) {
         LOGI("Platform creation failed");
@@ -26,6 +65,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     }
 
     App app;
+    for (const RECT& r : platform.roomRects)
+        app.sceneRects.push_back({ (int)r.left, (int)r.top,
+                                   (int)(r.right - r.left), (int)(r.bottom - r.top) });
+    if (auto test = test_layout_from_env(); !test.empty())
+        app.sceneRects = test;
     app.picturePathOverride = settings.picturePathUtf8();
     app.idleText            = settings.idleTextUtf8();
     app.beatSensitivity     = settings.beatSensitivity;

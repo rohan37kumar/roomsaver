@@ -95,11 +95,34 @@ Run `RoomSaver.exe /c` (or click **Settings…** in the Windows screen-saver dia
 |---|---|---|
 | Framed picture | file path | Image shown in the wall frame (PNG/JPG/BMP) |
 | TV text when nothing is playing | up to 24 characters | Wordmark on the idle TV. Default `kc`; empty = blank screen. Characters missing from the Consolas font show as boxes. |
+| Show the room on | Main screen only / All screens / Chosen screens | Which screens show the room in fullscreen mode; every other screen goes black. See [Multiple screens](#multiple-screens). |
 | Beat sensitivity | 0.20–3.00 | How strongly the bias lights flicker to the beat |
 | Brightness | 0.50–2.00 | Overall scene brightness |
 
 Values are saved to `HKCU\Software\RoomSaver` and picked up by every later launch.
 To reset everything, delete that key.
+
+## Multiple screens
+
+In Settings, **Show the room on** picks where the room appears when the screensaver
+runs (`/s`, the hotkey, or the idle screensaver):
+
+- **Main screen only** (default): the room on your main display; others go black.
+- **All screens**: a room on every connected screen, including ones plugged in later.
+- **Chosen screens**: tick the screens you want in the list. Click **Identify** to
+  flash each screen's number so you can tell identical monitors apart.
+
+Details:
+
+- Each screen gets its own full room, framed to that screen's shape (portrait
+  monitors work too). Album art, colours, beat and clock stay in sync on all of them.
+- Screens without the room are black. Mouse movement or a key press on **any** screen
+  ends the screensaver.
+- Chosen screens are remembered by the monitor itself, not by "Display 1/2", so
+  they survive reboots and re-docking. A chosen screen that isn't connected is listed
+  as *(not connected)* and skipped. If none of your chosen screens is connected, the
+  room goes on the main screen so the saver is never all black.
+- The small preview thumbnail in Windows' screen saver dialog always shows one room.
 
 ## The framed picture
 
@@ -131,12 +154,15 @@ Developer environment variables:
 | `ROOMSAVER_BEAT_LOG=1` | log beat level / intensity ~2×/s |
 | `ROOMSAVER_PICROT=<deg>` | override the picture's UV rotation (default 90) |
 | `ROOMSAVER_DUMP=1` | log every emissive node with its bounds |
+| `ROOMSAVER_TEST_LAYOUT=x,y,w,h;...` | draw the room only into these rectangles of the window (client pixels, top-left origin), to test multi-screen layouts with `--selftest` on one monitor |
 
 ## Troubleshooting
 
 Diagnostics go to **`%TEMP%\RoomSaver.log`** (the app has no console). A healthy run
 logs `GL_RENDERER`, `PostFX::init <w>x<h>`, `model: loaded ... room.glb`,
-`NowPlaying: SMTC session manager ready` and `AudioBeat: loopback started`.
+`NowPlaying: SMTC session manager ready` and `AudioBeat: loopback started`. In
+fullscreen mode it also lists every screen (`Screen N: ...`), marking the ones that
+show the room with `[room]`.
 
 - **Black screen / nothing renders:** make sure `shaders\` and `assets\` sit next to
   the `.exe`/`.scr`, then check the log for `model: loaded`.
@@ -158,7 +184,7 @@ logs `GL_RENDERER`, `PostFX::init <w>x<h>`, `model: loaded ... room.glb`,
 
 ## Notes
 
-- Primary monitor only. Other monitors keep showing their normal content while the
-  saver runs.
+- Every screen showing the room is a separate full render; on a weak GPU with several
+  large screens, choose fewer screens if it stutters.
 - Audio capture is shared-mode WASAPI loopback. It never locks the audio device or
   interferes with other apps.

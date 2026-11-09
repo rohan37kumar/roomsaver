@@ -25,6 +25,7 @@ add_executable(RoomSaver WIN32
     src/core/audiobeat.cpp
     src/core/settings.cpp
     src/core/config.cpp
+    src/core/monitors.cpp
     src/core/roomsaver.rc
     ${TP}/glad/src/gl.c
     ${TP}/stb/stb_impl.c

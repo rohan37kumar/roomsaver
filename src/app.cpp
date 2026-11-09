@@ -219,7 +219,8 @@ bool App::init(int w, int h) {
         LOGI("App::init: backdrop shader failed to load");
         return false;
     }
-    if (!postfx.init(w, h, asset("shaders"))) {
+    shaderDir = asset("shaders");
+    if (!rebuildLayout()) {
         LOGI("App::init: post-processing init failed");
         return false;
     }
@@ -528,7 +529,60 @@ void App::setTVTexture(const unsigned char* rgba, int w, int h) {
     room.materials[tvMatIdx].baseColor = glm::vec4(1.0f);
 }
 
-void App::resize(int w, int h) { width = w; height = h; postfx.resize(w, h); }
+void App::resize(int w, int h) {
+    if (w <= 0 || h <= 0) return;   // minimized: keep the current layout
+    width = w; height = h;
+    rebuildLayout();
+}
+
+// Build the list of room rectangles for the current window size and make sure
+// each distinct rectangle size has a PostFX (same-sized screens share one, since
+// each room is fully composited before the next one renders). Existing PostFX
+// objects are reused/resized where possible so window resizes stay cheap.
+bool App::rebuildLayout() {
+    rects.clear();
+    if (sceneRects.empty()) {
+        rects.push_back({ 0, 0, width, height });
+    } else {
+        for (const SceneRect& r : sceneRects) {
+            // Clip to the window; skip anything empty.
+            int x0 = std::max(r.x, 0), y0 = std::max(r.y, 0);
+            int x1 = std::min(r.x + r.w, width), y1 = std::min(r.y + r.h, height);
+            if (x1 > x0 && y1 > y0) rects.push_back({ x0, y0, x1 - x0, y1 - y0 });
+        }
+    }
+
+    std::vector<std::unique_ptr<PostFX>> pool = std::move(fx);
+    fx.clear();
+    rectFx.assign(rects.size(), -1);
+    for (size_t i = 0; i < rects.size(); ++i) {
+        const SceneRect& r = rects[i];
+        for (size_t k = 0; k < fx.size(); ++k)
+            if (fx[k]->width == r.w && fx[k]->height == r.h) { rectFx[i] = (int)k; break; }
+        if (rectFx[i] >= 0) continue;
+
+        // Prefer a pooled PostFX that already has this size, else resize any pooled one.
+        auto it = std::find_if(pool.begin(), pool.end(), [&](const std::unique_ptr<PostFX>& p) {
+            return p->width == r.w && p->height == r.h; });
+        if (it == pool.end()) it = pool.begin();
+        std::unique_ptr<PostFX> p;
+        if (it != pool.end()) {
+            p = std::move(*it);
+            pool.erase(it);
+            p->resize(r.w, r.h);
+        } else {
+            p = std::make_unique<PostFX>();
+            if (!p->init(r.w, r.h, shaderDir)) return false;
+        }
+        fx.push_back(std::move(p));
+        rectFx[i] = (int)fx.size() - 1;
+    }
+    for (auto& p : pool) p->destroy();
+
+    LOGI("App: layout %dx%d -> %zu room view(s), %zu render target set(s)",
+         width, height, rects.size(), fx.size());
+    return true;
+}
 
 void App::update(double dt) {
     timeSec += dt;
@@ -599,15 +653,41 @@ void App::update(double dt) {
 }
 
 void App::render() {
-    if (!modelLoaded) {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glViewport(0, 0, width, height);
-        glClearColor(0.06f, 0.05f, 0.06f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        return;
+    // Black everywhere first: screens without the room (and any gaps) stay black.
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, width, height);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    for (size_t i = 0; i < rects.size(); ++i) {
+        if (!modelLoaded) {   // no model: a dark panel where the room would be
+            const SceneRect& r = rects[i];
+            glEnable(GL_SCISSOR_TEST);
+            glScissor(r.x, height - (r.y + r.h), r.w, r.h);
+            glClearColor(0.06f, 0.05f, 0.06f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDisable(GL_SCISSOR_TEST);
+            continue;
+        }
+        renderRoom(*fx[rectFx[i]], rects[i]);
     }
 
-    const float aspect = height > 0 ? (float)width / (float)height : 1.0f;
+    // Force the back-buffer ALPHA to fully opaque. The HDR composite can leave
+    // alpha < 1 in places; clearing only the alpha channel to 1.0 (RGB untouched via
+    // the colour mask) makes the --selftest screenshot come out solid rather than
+    // partly transparent.
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, width, height);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+}
+
+// Draw one full copy of the room (backdrop + model + bloom), framed to `r`'s
+// aspect, and composite it into rectangle `r` of the window.
+void App::renderRoom(PostFX& postfx, const SceneRect& r) {
+    const float aspect = r.h > 0 ? (float)r.w / (float)r.h : 1.0f;
 
     // ---- Scene pass: draw into the HDR MSAA target ----
     postfx.beginScene();
@@ -687,18 +767,9 @@ void App::render() {
     }
     glBindVertexArray(0);
 
-    // ---- Resolve + bloom + composite to the window back buffer ----
-    postfx.endScene();
-
-    // Force the back-buffer ALPHA to fully opaque. The HDR composite can leave
-    // alpha < 1 in places; clearing only the alpha channel to 1.0 (RGB untouched via
-    // the colour mask) makes the --selftest screenshot come out solid rather than
-    // partly transparent.
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    // ---- Resolve + bloom + composite into this screen's rectangle ----
+    // (GL's window origin is bottom-left; SceneRect is top-left.)
+    postfx.endScene(r.x, height - (r.y + r.h));
 }
 
 void App::shutdown() {
@@ -707,7 +778,8 @@ void App::shutdown() {
     if (clockTex)   glDeleteTextures(1, &clockTex);
     if (pictureTex) glDeleteTextures(1, &pictureTex);
     if (tvTex)      glDeleteTextures(1, &tvTex);
-    postfx.destroy();
+    for (auto& p : fx) p->destroy();
+    fx.clear();
     backdrop.destroy();
     room.destroy();
     shader.destroy();

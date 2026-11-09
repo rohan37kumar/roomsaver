@@ -1,5 +1,6 @@
 #include "core/platform.h"
 #include "core/log.h"
+#include "core/resource.h"
 
 #include <glad/gl.h>
 #include <shellapi.h>
@@ -168,8 +169,9 @@ static bool create_context(Platform& p) {
         WGL_COLOR_BITS_ARB,     32,
         WGL_DEPTH_BITS_ARB,     24,
         WGL_STENCIL_BITS_ARB,   8,
-        WGL_SAMPLE_BUFFERS_ARB, 1,
-        WGL_SAMPLES_ARB,        4,
+        // No MSAA on the window itself: the scene is antialiased in PostFX's
+        // offscreen MSAA target, and the fullscreen window can span several
+        // monitors (a multisampled back buffer that size would waste memory).
         0
     };
     int   pixelFormat = 0;
@@ -211,6 +213,7 @@ bool Platform::create(const AppOptions& opts) {
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = inst;
     wc.hCursor       = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon         = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
     wc.lpszClassName = kWndClass;
     RegisterClassW(&wc);
 
@@ -220,12 +223,23 @@ bool Platform::create(const AppOptions& opts) {
 
     switch (mode) {
     case Mode::FullScreen: {
-        // v1: primary monitor.
-        x = 0; y = 0;
-        w = GetSystemMetrics(SM_CXSCREEN);
-        h = GetSystemMetrics(SM_CYSCREEN);
+        // One borderless window over the whole virtual desktop (every monitor).
+        // The room renders into roomRects; everything else stays black.
+        x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if (w <= 0 || h <= 0) {   // paranoia: fall back to the primary monitor
+            x = 0; y = 0;
+            w = GetSystemMetrics(SM_CXSCREEN);
+            h = GetSystemMetrics(SM_CYSCREEN);
+        }
+        for (const RECT& r : opts.roomScreens)
+            roomRects.push_back({ r.left - x, r.top - y, r.right - x, r.bottom - y });
         style   = WS_POPUP | WS_VISIBLE;
         exStyle = WS_EX_TOPMOST;
+        LOGI("FullScreen: window %dx%d at (%d,%d), room on %zu screen(s)",
+             w, h, x, y, roomRects.size());
         break;
     }
     case Mode::Preview: {

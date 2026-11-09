@@ -10,6 +10,8 @@ whatever music you're playing.
 - **Background glow and TV bias lights take on the album's dominant color.**
 - **Bias lights pulse to the beat**, detected from your speakers' output.
 - A working **digital clock**, a **framed picture** you choose, and a warm wall lamp.
+- **Multi-monitor:** show the room on your main screen, on all screens, or on the
+  screens you pick. The other screens go black.
 - Everything runs locally: no accounts, no API keys, no network access.
 
 Native C++20, Win32 + OpenGL 3.3, with HDR bloom. All dependencies are vendored, so
@@ -81,6 +83,7 @@ Run `RoomSaver.exe /c`, or click **Settings…** in the Windows screen saver dia
 |---|---|
 | Framed picture | Any PNG/JPG/BMP. It's cover-fit to the frame (no stretching). |
 | TV text when nothing is playing | Wordmark on the idle TV (default `kc`). Leave empty for a blank screen. |
+| Show the room on | **Main screen only** (default), **All screens**, or **Chosen screens** ticked in the list. Screens without the room go black. **Identify** flashes each screen's number. |
 | Beat sensitivity | How strongly the lights pulse to the music (0.2–3.0) |
 | Brightness | Overall scene brightness (0.5–2.0) |
 
@@ -102,6 +105,7 @@ Settings are stored per user in `HKCU\Software\RoomSaver`.
 | Rendering | glTF via cgltf, forward lambert + emissive, fixed ortho isometric camera, 4× MSAA HDR + bloom (`src/app.cpp`, `src/core/postfx.cpp`, `shaders/`) |
 | Album art | Windows System Media Transport Controls via C++/WinRT, on a background thread (`src/core/nowplaying.cpp`) |
 | Beat detection | WASAPI shared-mode loopback → KISS FFT → bass-onset envelope (`src/core/audiobeat.cpp`) |
+| Multi-monitor | One window over all screens; the room is rendered into each chosen screen's area, the rest stays black (`src/core/monitors.cpp`) |
 | Settings dialog | Win32 dialog + registry (`src/core/config.cpp`, `src/core/settings.cpp`) |
 
 The command-line flags (`/s`, `/p`, `/c`, `/lock`, `--selftest`) are listed in
@@ -118,7 +122,8 @@ The command-line flags (`/s`, `/p`, `/c`, `/lock`, `--selftest`) are listed in
 ## Limitations
 
 - Windows only.
-- Covers the primary monitor only. Other monitors keep showing their normal content.
+- Each extra screen that shows the room is another full render, so many large
+  screens on a weak GPU may lower the frame rate.
 - Album art only appears for players that publish it to Windows' media controls.
 
 ## License

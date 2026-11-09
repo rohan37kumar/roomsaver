@@ -40,6 +40,35 @@ void write_string(HKEY key, const wchar_t* name, const std::wstring& v) {
                    (DWORD)((v.size() + 1) * sizeof(wchar_t)));
 }
 
+// REG_MULTI_SZ <-> list of strings (empty entries can't be represented; skipped).
+std::vector<std::wstring> read_multi(HKEY key, const wchar_t* name) {
+    std::vector<std::wstring> out;
+    DWORD type = 0, size = 0;
+    if (RegQueryValueExW(key, name, nullptr, &type, nullptr, &size) != ERROR_SUCCESS ||
+        type != REG_MULTI_SZ || size == 0)
+        return out;
+    std::wstring buf(size / sizeof(wchar_t) + 2, L'\0');
+    if (RegQueryValueExW(key, name, nullptr, nullptr, (LPBYTE)buf.data(), &size) != ERROR_SUCCESS)
+        return out;
+    for (size_t i = 0; i < buf.size() && buf[i] != L'\0';) {
+        size_t end = buf.find(L'\0', i);
+        if (end == std::wstring::npos) end = buf.size();
+        out.push_back(buf.substr(i, end - i));
+        i = end + 1;
+    }
+    return out;
+}
+
+void write_multi(HKEY key, const wchar_t* name, const std::vector<std::wstring>& list) {
+    std::wstring buf;
+    for (const std::wstring& s : list)
+        if (!s.empty()) { buf += s; buf.push_back(L'\0'); }
+    buf.push_back(L'\0');
+    if (buf.size() < 2) buf.push_back(L'\0');   // empty list = two terminators
+    RegSetValueExW(key, name, 0, REG_MULTI_SZ, (const BYTE*)buf.data(),
+                   (DWORD)(buf.size() * sizeof(wchar_t)));
+}
+
 } // namespace
 
 Settings Settings::load() {
@@ -51,8 +80,13 @@ Settings Settings::load() {
         DWORD d = 0;
         if (read_dword(key, L"BeatSensitivity", d)) s.beatSensitivity = d2f(d);
         if (read_dword(key, L"Brightness", d))      s.brightness      = d2f(d);
+        if (read_dword(key, L"DisplayMode", d) && d <= (DWORD)DisplayMode::Chosen)
+            s.displayMode = (DisplayMode)d;
+        s.displays     = read_multi(key, L"Displays");
+        s.displayNames = read_multi(key, L"DisplayNames");
         RegCloseKey(key);
     }
+    s.displayNames.resize(s.displays.size());   // keep the two lists aligned
     // Clamp to sane ranges regardless of what was on disk.
     if (s.beatSensitivity < 0.2f) s.beatSensitivity = 0.2f;
     if (s.beatSensitivity > 3.0f) s.beatSensitivity = 3.0f;
@@ -74,6 +108,14 @@ void Settings::save() const {
     DWORD sens = f2d(beatSensitivity), bri = f2d(brightness);
     RegSetValueExW(key, L"BeatSensitivity", 0, REG_DWORD, (const BYTE*)&sens, sizeof(sens));
     RegSetValueExW(key, L"Brightness",      0, REG_DWORD, (const BYTE*)&bri,  sizeof(bri));
+    DWORD mode = (DWORD)displayMode;
+    RegSetValueExW(key, L"DisplayMode",     0, REG_DWORD, (const BYTE*)&mode, sizeof(mode));
+    // Names may be empty; store a placeholder so the lists stay aligned.
+    std::vector<std::wstring> names = displayNames;
+    names.resize(displays.size());
+    for (std::wstring& n : names) if (n.empty()) n = L"Display";
+    write_multi(key, L"Displays", displays);
+    write_multi(key, L"DisplayNames", names);
     RegCloseKey(key);
 }
 

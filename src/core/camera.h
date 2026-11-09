@@ -26,7 +26,9 @@ struct IsoCamera {
     }
 
     glm::mat4 proj(float aspect) const {
-        float hh = orthoHalfHeight;
+        // orthoHalfHeight fits the model vertically; on a portrait view (e.g. a
+        // rotated monitor) width is the tighter axis, so widen to keep it all in.
+        float hh = aspect < 1.0f && aspect > 0.0f ? orthoHalfHeight / aspect : orthoHalfHeight;
         float hw = hh * aspect;
         return glm::ortho(-hw, hw, -hh, hh, nearP, farP);
     }

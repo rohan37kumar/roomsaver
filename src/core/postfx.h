@@ -37,7 +37,9 @@ struct PostFX {
     void resize(int w, int h);
 
     void beginScene();             // bind MSAA scene FBO + full viewport
-    void endScene();               // resolve -> bloom -> composite to FBO 0
+    // Resolve -> bloom -> composite to FBO 0, into the width x height rectangle
+    // whose bottom-left corner is (dstX, dstY) in window pixels (GL origin).
+    void endScene(int dstX = 0, int dstY = 0);
     void drawFullscreen();         // bind VAO, draw the fullscreen triangle
 
 private:

@@ -1,4 +1,5 @@
 #include "core/log.h"
+#include "core/version.h"
 
 #include <windows.h>
 #include <cstdio>
@@ -17,7 +18,7 @@ void log_init() {
     // Deny other writers but allow shared *reads* so the log can be tailed while
     // the app is still running.
     g_logFile = _wfsopen(path, L"w", _SH_DENYWR);
-    log_msg("=== RoomSaver log start ===");
+    log_msg("=== RoomSaver %s log start ===", ROOMSAVER_VERSION_STRING);
 }
 
 void log_msg(const char* fmt, ...) {

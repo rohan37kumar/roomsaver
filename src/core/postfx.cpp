@@ -106,7 +106,7 @@ void PostFX::beginScene() {
     glViewport(0, 0, width, height);
 }
 
-void PostFX::endScene() {
+void PostFX::endScene(int dstX, int dstY) {
     // Resolve MSAA scene -> single-sample texture.
     glBindFramebuffer(GL_READ_FRAMEBUFFER, msFbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, sceneFbo);
@@ -147,9 +147,10 @@ void PostFX::endScene() {
     }
     // Blurred result now lives in bloomTex[src].
 
-    // Composite scene + bloom -> default framebuffer (the window back buffer).
+    // Composite scene + bloom -> default framebuffer (the window back buffer),
+    // into this screen's rectangle.
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(0, 0, width, height);
+    glViewport(dstX, dstY, width, height);
     composite.use();
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, sceneTex);

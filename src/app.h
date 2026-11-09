@@ -8,8 +8,13 @@
 #include "core/nowplaying.h"
 #include "core/audiobeat.h"
 
+#include <memory>
 #include <string>
 #include <vector>
+
+// A rectangle of the window that shows its own copy of the room (one per
+// screen in fullscreen mode). Window client pixels, top-left origin.
+struct SceneRect { int x = 0, y = 0, w = 0, h = 0; };
 
 // The renderer/scene: loads the room glTF, binds the dynamic surfaces (TV album
 // art, framed picture, clock, bias lights) and draws it with a forward
@@ -25,6 +30,10 @@ struct App {
     int    height = 0;
     double timeSec = 0.0;
 
+    // Where the room is drawn (set before init()). Empty = fill the whole window.
+    // Everything outside these rectangles is black.
+    std::vector<SceneRect> sceneRects;
+
     // User settings (from the registry via Settings). Set before init().
     std::string picturePathOverride;   // configured framed-picture path (UTF-8); empty = default
     std::string idleText = "kc";       // TV wordmark when nothing is playing (UTF-8; "" = blank)
@@ -36,9 +45,17 @@ struct App {
     IsoCamera  camera;
     bool       modelLoaded = false;
 
-    // Post-processing (HDR + bloom) and the gradient-glow backdrop.
-    PostFX     postfx;
-    Shader     backdrop;
+    // Post-processing (HDR + bloom): one PostFX per distinct room size, shared
+    // by same-sized screens. `rects` is the active layout, `rectFx[i]` the
+    // PostFX that rects[i] renders through.
+    std::string                          shaderDir;
+    std::vector<std::unique_ptr<PostFX>> fx;
+    std::vector<SceneRect>               rects;
+    std::vector<int>                     rectFx;
+    bool rebuildLayout();          // (re)create rects/fx for width x height
+    void renderRoom(PostFX& p, const SceneRect& r);
+
+    Shader     backdrop;           // gradient-glow backdrop
     glm::vec3  glowColor{0.60f, 0.30f, 0.12f};   // eased backdrop glow (album-driven)
 
     // Resolved dynamic surfaces (see docs/ASSET_CONTRACT.md for the node names).
