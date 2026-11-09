@@ -1,0 +1,18 @@
+# Build output
+build/
+out/
+cmake-build-*/
+CMakeUserPresets.json
+.vs/
+*.user
+*.aps
+
+# Local dev artifacts (not part of the project)
+build_baselines/
+*.zip
+*.log
+/selftest.png
+
+# AI-assistant notes / local tooling
+CLAUDE.md
+.claude/

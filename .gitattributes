@@ -1,0 +1,13 @@
+* text=auto
+
+# Windows batch files misbehave with LF line endings
+*.bat  text eol=crlf
+*.rc   text eol=crlf
+
+# Binary assets
+*.glb  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.bmp  binary
+*.ttf  binary

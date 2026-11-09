@@ -1,0 +1,29 @@
+#include <windows.h>
+#include "resource.h"
+
+IDD_CONFIG DIALOGEX 0, 0, 300, 204
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "RoomSaver Settings"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    LTEXT           "Framed picture (shown in the room):", IDC_STATIC, 10, 8, 220, 10
+    EDITTEXT        IDC_PICPATH, 10, 20, 216, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_BROWSE, 232, 20, 58, 14
+
+    LTEXT           "TV text when nothing is playing:", IDC_STATIC, 10, 42, 220, 10
+    EDITTEXT        IDC_IDLETEXT, 10, 54, 120, 14, ES_AUTOHSCROLL
+    LTEXT           "(leave empty for a blank screen)", IDC_STATIC, 136, 57, 154, 10
+
+    LTEXT           "Beat sensitivity:", IDC_STATIC, 10, 76, 100, 10
+    CONTROL         "", IDC_SENS, "msctls_trackbar32", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 10, 88, 246, 22
+    LTEXT           "1.00", IDC_SENS_VAL, 262, 92, 30, 10
+
+    LTEXT           "Brightness:", IDC_STATIC, 10, 116, 100, 10
+    CONTROL         "", IDC_BRIGHT, "msctls_trackbar32", TBS_HORZ | TBS_AUTOTICKS | WS_TABSTOP, 10, 128, 246, 22
+    LTEXT           "1.00", IDC_BRIGHT_VAL, 262, 132, 30, 10
+
+    LTEXT           "Album art, glow && beat flicker react to whatever is playing.", IDC_STATIC, 10, 158, 280, 10
+
+    DEFPUSHBUTTON   "OK", IDOK, 176, 180, 54, 16
+    PUSHBUTTON      "Cancel", IDCANCEL, 236, 180, 54, 16
+END
