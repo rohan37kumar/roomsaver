@@ -8,8 +8,13 @@
 
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <exception>
+#include <stdexcept>
 
 // Dev-only: ROOMSAVER_TEST_LAYOUT="x,y,w,h;x,y,w,h" puts the room into those
 // rectangles of the window (client pixels, top-left origin) instead of filling
@@ -32,6 +37,70 @@ static std::vector<SceneRect> test_layout_from_env() {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Lock-on-exit (/s /lock). The PC must end up locked however the saver ends:
+// normal dismissal, a startup failure, a crash or an unexpected error. Every
+// one of those paths funnels into lock_now(), which locks at most once.
+// ---------------------------------------------------------------------------
+static std::atomic<bool> g_lockArmed{false};
+static std::atomic<bool> g_lockDone{false};
+
+// Debug builds only: ROOMSAVER_LOCK_DRYRUN=1 logs instead of locking, and
+// ROOMSAVER_DEBUG_FAULT=initfail|crash|throw simulates a failure, so every
+// lock path can be tested without locking the machine. Release builds have
+// neither (a release /lock always locks).
+#ifndef NDEBUG
+static bool lock_dry_run() { return std::getenv("ROOMSAVER_LOCK_DRYRUN") != nullptr; }
+static bool debug_fault(const char* kind) {
+    const char* e = std::getenv("ROOMSAVER_DEBUG_FAULT");
+    return e && std::strcmp(e, kind) == 0;
+}
+#else
+static bool lock_dry_run() { return false; }
+static bool debug_fault(const char*) { return false; }
+#endif
+
+static void lock_now(const char* why) {
+    if (!g_lockArmed.load() || g_lockDone.exchange(true)) return;
+    if (lock_dry_run()) { LOGI("LOCK_DRYRUN: would lock now (%s)", why); return; }
+    // Lock first, log after: this also runs from crash handlers, where the log
+    // file could be in a broken state.
+    const BOOL ok = LockWorkStation();
+    const DWORD err = ok ? 0 : GetLastError();
+    // Our window is still up and covering the screen here, so Windows switches
+    // to the lock screen over it with no flash of the unlocked desktop. The short
+    // wait lets the secure desktop come up while the last frame is still shown.
+    if (ok) Sleep(350);
+    if (ok) LOGI("Locked the workstation (%s)", why);
+    else    LOGI("LockWorkStation FAILED (error %lu) - the PC is NOT locked (%s)", err, why);
+}
+
+// Crash (access violation etc.) or an unhandled C++ exception, on any thread.
+static LONG WINAPI on_unhandled_exception(EXCEPTION_POINTERS*) {
+    lock_now("crash or unhandled error");
+    return EXCEPTION_CONTINUE_SEARCH;   // let Windows Error Reporting carry on
+}
+// abort() on any thread, including the default std::terminate.
+static void on_abort_signal(int) { lock_now("abort"); }
+// An exception escaping the main thread.
+static void on_terminate() {
+    lock_now("unexpected error");
+    std::_Exit(3);
+}
+
+static void arm_lock_on_exit() {
+    g_lockArmed.store(true);
+    SetUnhandledExceptionFilter(on_unhandled_exception);
+    std::signal(SIGABRT, on_abort_signal);
+    std::set_terminate(on_terminate);
+}
+
+// If the saver never became the active window it can't see key presses, which
+// would go to whatever app is behind it instead. With /lock, give it a moment
+// to get focus, then lock rather than keep covering a desktop that typing can
+// still reach.
+static constexpr double kFocusGraceSec = 2.0;
+
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     log_init();
     // Real pixel coordinates on scaled / mixed-DPI setups (monitor rects, window size).
@@ -40,6 +109,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
 
     if (opts.mode == Mode::Config)
         return run_config_dialog();
+
+    const bool lockOnExit = opts.lockOnExit && opts.mode == Mode::FullScreen;
+    if (lockOnExit) arm_lock_on_exit();
 
     // Load user settings (registry) and hand them to the engine before init.
     Settings settings = Settings::load();
@@ -61,6 +133,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     Platform platform;
     if (!platform.create(opts)) {
         LOGI("Platform creation failed");
+        lock_now("startup failed");
+        platform.destroy();
         return 1;
     }
 
@@ -74,14 +148,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     app.idleText            = settings.idleTextUtf8();
     app.beatSensitivity     = settings.beatSensitivity;
     app.brightness          = settings.brightness;
-    if (!app.init(platform.width, platform.height)) {
+    if (debug_fault("initfail") || !app.init(platform.width, platform.height)) {
+        LOGI("App init failed");
+        lock_now("startup failed");
+        app.shutdown();
         platform.destroy();
         return 1;
     }
 
-    LARGE_INTEGER freq, prev;
+    LARGE_INTEGER freq, start, prev;
     QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&prev);
+    QueryPerformanceCounter(&start);
+    prev = start;
 
     // Selftest normally captures frame 1. A delay lets async work (e.g. the SMTC
     // album-art fetch) land before the screenshot; frames keep rendering meanwhile.
@@ -105,6 +183,28 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         prev = now;
         dt = std::min(dt, 0.1);   // clamp so a hitch/resume doesn't jump animation
 
+        if (opts.mode == Mode::FullScreen) {
+            const double running = double(now.QuadPart - start.QuadPart) / double(freq.QuadPart);
+            static bool loggedFocus = false;
+            if (platform.everActive && !loggedFocus) {
+                LOGI("Screensaver has keyboard focus (after %.2f s)", running);
+                loggedFocus = true;
+            }
+            // Backstop for the WM_ACTIVATE handling: another window is in front.
+            if (platform.everActive && GetForegroundWindow() != platform.hwnd) {
+                LOGI("Screensaver lost focus - ending");
+                break;
+            }
+            if (lockOnExit && !platform.everActive && running > kFocusGraceSec) {
+                LOGI("Screensaver never got keyboard focus - locking now");
+                break;
+            }
+#ifndef NDEBUG
+            if (running > 1.5 && debug_fault("crash")) *(volatile int*)nullptr = 0;
+            if (running > 1.5 && debug_fault("throw")) throw std::runtime_error("debug fault");
+#endif
+        }
+
         app.update(dt);
         app.render();
 
@@ -122,16 +222,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         platform.swap();
     }
 
-    // Secure screensaver: lock the PC BEFORE we tear down the window. Our
-    // fullscreen topmost window is still covering the screen here, so Windows
-    // switches to the lock screen over it — no split-second flash of the unlocked
-    // desktop. (Locking at *startup* would instead hide the scene behind the lock
-    // screen, so we lock the instant the saver is dismissed.) The short wait lets
-    // the secure desktop come up while the last frame is still on screen.
-    if (opts.lockOnExit && opts.mode == Mode::FullScreen) {
-        LockWorkStation();
-        Sleep(350);
-    }
+    // Secure screensaver: lock the PC BEFORE we tear down the window (see
+    // lock_now). Locking at *startup* would instead hide the scene behind the
+    // lock screen, so we lock the instant the saver is dismissed.
+    lock_now("dismissed");
 
     app.shutdown();
     platform.destroy();

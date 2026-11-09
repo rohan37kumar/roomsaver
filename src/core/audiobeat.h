@@ -19,7 +19,8 @@ struct AudioBeat {
     float sensitivity = 1.0f;                           // scales detected onset
 
 private:
-    void threadMain();
+    void threadMain();   // runs capture(); contains any error so it can't end the process
+    void capture();
 
     std::thread        worker;
     std::atomic<bool>  running{false};

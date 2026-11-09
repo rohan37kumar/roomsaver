@@ -21,12 +21,29 @@
 template <class T> static void safe_release(T*& p) { if (p) { p->Release(); p = nullptr; } }
 
 void AudioBeat::threadMain() {
+    // An error escaping a std::thread ends the whole process (and, under /lock,
+    // skips the normal exit path), so contain it: the beat light just goes off.
+    try {
+        capture();
+    } catch (...) {
+        LOGI("AudioBeat: unexpected error - beat detection stopped");
+    }
+    capturing.store(false);
+    beat.store(0.0f);
+}
+
+void AudioBeat::capture() {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool comInit = SUCCEEDED(hr);
 
     // ---- Persistent DSP state (survives device reconnects) ----
     const int N = 1024;                       // FFT window (~21 ms @ 48 kHz)
     kiss_fftr_cfg cfg = kiss_fftr_alloc(N, 0, nullptr, nullptr);
+    if (!cfg) {
+        LOGI("AudioBeat: FFT setup failed - beat detection off");
+        if (comInit) CoUninitialize();
+        return;
+    }
     std::vector<float> hann(N);
     for (int i = 0; i < N; ++i) hann[i] = 0.5f * (1.0f - cosf(6.2831853f * i / (N - 1)));
     std::vector<float> tin(N);

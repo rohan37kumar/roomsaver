@@ -35,6 +35,11 @@ struct Platform {
     Mode  mode = Mode::Windowed;
     bool  shouldQuit = false;
 
+    // True once the window has been the active (keyboard-focus) window. In
+    // FullScreen mode, losing activation after that ends the saver, like any
+    // other input: otherwise keystrokes would go to a hidden app behind it.
+    bool  everActive = false;
+
     // Set to true when a client rect change was detected (consume + reset).
     bool  resized = false;
 

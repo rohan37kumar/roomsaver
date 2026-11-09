@@ -19,20 +19,23 @@
 #include <cstring>
 #include <algorithm>
 
-#ifndef PROJECT_ROOT
-#define PROJECT_ROOT "."
-#endif
-
-// Where shaders/ and assets/ live. A shipped .scr carries them next to the exe;
-// during development they load straight from the source tree (PROJECT_ROOT).
+// Where shaders/ and assets/ live: always beside the exe. Debug builds (only)
+// define PROJECT_ROOT and fall back to the source tree when nothing has been
+// staged there yet. Release builds never fall back: loading from a fixed path
+// that may not exist on another PC would let anyone who creates that folder
+// supply the shaders and models.
 static const std::string& asset_base() {
     static std::string base = [] {
         std::string dir = exe_dir_utf8();
-        if (FILE* f = std::fopen((dir + "/shaders/forward.vert").c_str(), "rb")) {
+#ifdef PROJECT_ROOT
+        if (FILE* f = fopen_utf8(dir + "/shaders/forward.vert", L"rb")) {
             std::fclose(f);
-            return dir;                       // packaged: assets sit beside the exe
+        } else {
+            dir = PROJECT_ROOT;               // debug: load from the source tree
         }
-        return std::string(PROJECT_ROOT);     // dev: load from the source tree
+#endif
+        LOGI("assets: %s", dir.c_str());
+        return dir;
     }();
     return base;
 }

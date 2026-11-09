@@ -4,7 +4,7 @@
 // Bump these for a new version; the strings below follow automatically.
 #define ROOMSAVER_VERSION_MAJOR 1
 #define ROOMSAVER_VERSION_MINOR 1
-#define ROOMSAVER_VERSION_PATCH 0
+#define ROOMSAVER_VERSION_PATCH 1
 
 #define ROOMSAVER_STR_(x) #x
 #define ROOMSAVER_STR(x)  ROOMSAVER_STR_(x)

@@ -132,6 +132,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (saver) { SetCursor(nullptr); return TRUE; }
         break;
 
+    // --- focus: another window taking over dismisses the screensaver ---
+    // If some other app became active while we keep covering the screen, typed
+    // keys would reach it unseen (and never dismiss us), so treat it as input.
+    case WM_ACTIVATE:
+        if (LOWORD(wp) != WA_INACTIVE) self->everActive = true;
+        else if (saver && self->everActive) { self->shouldQuit = true; PostQuitMessage(0); }
+        break;
+    case WM_ACTIVATEAPP:
+        if (wp) self->everActive = true;
+        else if (saver && self->everActive) { self->shouldQuit = true; PostQuitMessage(0); }
+        break;
+
     // --- input dismisses the screensaver in fullscreen mode ---
     case WM_MOUSEMOVE: {
         if (saver) {
@@ -150,6 +162,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDOWN:
     case WM_RBUTTONDOWN:
     case WM_MBUTTONDOWN:
+    case WM_XBUTTONDOWN:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
         if (saver) { self->shouldQuit = true; PostQuitMessage(0); }
         return 0;
     }

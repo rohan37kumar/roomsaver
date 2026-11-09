@@ -57,9 +57,11 @@ if(MSVC)
         _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# Dev fallback: if assets aren't found next to the exe, load them from the source
-# tree. A shipped .scr uses the copies placed beside it by the post-build step.
-target_compile_definitions(RoomSaver PRIVATE PROJECT_ROOT="${CMAKE_SOURCE_DIR}")
+# Debug builds only: if assets aren't found next to the exe, load them from the
+# source tree. Release builds never look anywhere but beside the exe (the
+# post-build step puts shaders/ and assets/ there), and don't embed this path.
+target_compile_definitions(RoomSaver PRIVATE
+    $<$<CONFIG:Debug>:PROJECT_ROOT="${CMAKE_SOURCE_DIR}">)
 
 set_target_properties(RoomSaver PROPERTIES OUTPUT_NAME "RoomSaver")
 

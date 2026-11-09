@@ -5,14 +5,74 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Media.Control.h>
 #include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.Graphics.Imaging.h>
 
-#include <stb_image.h>
-
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <exception>
 
 using namespace winrt;
 using namespace winrt::Windows::Media::Control;
 using namespace winrt::Windows::Storage::Streams;
+using namespace winrt::Windows::Graphics::Imaging;
+
+// Album art comes from whatever app (or web page) is playing media, so it is
+// untrusted input. It is decoded by Windows' own image decoder (WIC, kept
+// patched by Windows Update) rather than a bundled decoder, and capped: the
+// encoded thumbnail must be small, its declared size sane, and it is decoded
+// straight to at most kArtMaxSide pixels (the TV texture is only 512x288).
+namespace {
+constexpr uint64_t kArtMaxBytes  = 16ull * 1024 * 1024;   // encoded thumbnail
+constexpr uint64_t kArtMaxPixels = 64ull * 1024 * 1024;   // declared w*h (64 MP)
+constexpr uint32_t kArtMaxSide   = 1024;                  // decoded longest side
+
+// Decode an album-art stream to RGBA8 (row 0 = top), at most kArtMaxSide px on
+// the longest side. Returns false (and logs why) if it is rejected or invalid;
+// WinRT errors are thrown to the caller.
+bool decode_album_art(IRandomAccessStream const& stream, std::vector<unsigned char>& rgba,
+                      int& outW, int& outH) {
+    const uint64_t size = stream.Size();
+    if (size == 0) return false;
+    if (size > kArtMaxBytes) {
+        LOGI("NowPlaying: album art ignored (%llu bytes, too large)", (unsigned long long)size);
+        return false;
+    }
+
+    BitmapDecoder decoder = BitmapDecoder::CreateAsync(stream).get();
+    const uint32_t sw = decoder.PixelWidth(), sh = decoder.PixelHeight();
+    if (sw == 0 || sh == 0 || (uint64_t)sw * sh > kArtMaxPixels) {
+        LOGI("NowPlaying: album art ignored (%ux%u)", sw, sh);
+        return false;
+    }
+
+    // Decode straight to a bounded size (aspect kept).
+    uint32_t w = sw, h = sh;
+    BitmapTransform transform;
+    if (std::max(sw, sh) > kArtMaxSide) {
+        const double k = (double)kArtMaxSide / std::max(sw, sh);
+        w = std::max<uint32_t>(1, (uint32_t)std::lround(sw * k));
+        h = std::max<uint32_t>(1, (uint32_t)std::lround(sh * k));
+        transform.ScaledWidth(w);
+        transform.ScaledHeight(h);
+        transform.InterpolationMode(BitmapInterpolationMode::Fant);
+    }
+    // RGBA8, straight alpha, row 0 = top: the layout the renderer expects.
+    PixelDataProvider pixels = decoder.GetPixelDataAsync(
+        BitmapPixelFormat::Rgba8, BitmapAlphaMode::Straight, transform,
+        ExifOrientationMode::IgnoreExifOrientation,
+        ColorManagementMode::DoNotColorManage).get();
+    com_array<uint8_t> px = pixels.DetachPixelData();
+    if (px.size() != (size_t)w * h * 4) {
+        LOGI("NowPlaying: album art decode returned an unexpected size");
+        return false;
+    }
+    rgba.assign(px.begin(), px.end());
+    outW = (int)w; outH = (int)h;
+    LOGI("NowPlaying: decoded album art %ux%u -> %ux%u", sw, sh, w, h);
+    return true;
+}
+}
 
 bool NowPlaying::start() {
     if (running.load()) return true;
@@ -49,6 +109,10 @@ void NowPlaying::threadMain() {
         LOGI("NowPlaying: session manager request failed (0x%08X)", (unsigned)e.code());
         uninit_apartment();
         return;
+    } catch (...) {
+        LOGI("NowPlaying: session manager request failed (unexpected error)");
+        uninit_apartment();
+        return;
     }
     LOGI("NowPlaying: SMTC session manager ready");
 
@@ -59,28 +123,18 @@ void NowPlaying::threadMain() {
         if (!thumbRef) return false;
         try {
             IRandomAccessStreamWithContentType stream = thumbRef.OpenReadAsync().get();
-            uint32_t size = (uint32_t)stream.Size();
-            if (size == 0) return false;
-            Buffer buffer(size);
-            IBuffer filled = stream.ReadAsync(buffer, size, InputStreamOptions::None).get();
-            DataReader reader = DataReader::FromBuffer(filled);
-            std::vector<uint8_t> bytes(filled.Length());
-            reader.ReadBytes(bytes);
-
-            int w = 0, h = 0, comp = 0;
-            unsigned char* px = stbi_load_from_memory(
-                bytes.data(), (int)bytes.size(), &w, &h, &comp, 4);
-            if (!px) { LOGI("NowPlaying: art decode failed"); return false; }
-            {
-                std::lock_guard<std::mutex> l(mtx);
-                pendingRGBA.assign(px, px + (size_t)w * h * 4);
-                pendingW = w; pendingH = h; pendingReady = true;
-            }
-            stbi_image_free(px);
-            LOGI("NowPlaying: decoded album art %dx%d", w, h);
+            std::vector<unsigned char> rgba;
+            int w = 0, h = 0;
+            if (!decode_album_art(stream, rgba, w, h)) return false;
+            std::lock_guard<std::mutex> l(mtx);
+            pendingRGBA = std::move(rgba);
+            pendingW = w; pendingH = h; pendingReady = true;
             return true;
         } catch (hresult_error const& e) {
-            LOGI("NowPlaying: thumbnail read failed (0x%08X)", (unsigned)e.code());
+            LOGI("NowPlaying: thumbnail read/decode failed (0x%08X)", (unsigned)e.code());
+            return false;
+        } catch (...) {
+            LOGI("NowPlaying: thumbnail read/decode failed (unexpected error)");
             return false;
         }
     };
@@ -133,6 +187,10 @@ void NowPlaying::threadMain() {
             }
         } catch (hresult_error const& e) {
             LOGI("NowPlaying: poll error (0x%08X)", (unsigned)e.code());
+        } catch (...) {
+            // Never let an error escape this thread: that would end the whole
+            // process (and, under /lock, skip the normal exit path).
+            LOGI("NowPlaying: poll error (unexpected)");
         }
 
         // Poll fast while chasing the artwork so it appears promptly on open;
