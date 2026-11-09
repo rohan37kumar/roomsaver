@@ -44,6 +44,14 @@ static std::vector<SceneRect> test_layout_from_env() {
 // ---------------------------------------------------------------------------
 static std::atomic<bool> g_lockArmed{false};
 static std::atomic<bool> g_lockDone{false};
+static std::atomic<bool> g_lockSucceeded{false};
+
+// Exit code the watchdog reads: 0 = "I locked the PC, nothing to do". Anything
+// else (including a crash or being killed) makes the watchdog lock it.
+static int lock_exit_code(int fallback) {
+    if (!g_lockArmed.load()) return fallback;
+    return g_lockSucceeded.load() ? 0 : 3;
+}
 
 // Debug builds only: ROOMSAVER_LOCK_DRYRUN=1 logs instead of locking, and
 // ROOMSAVER_DEBUG_FAULT=initfail|crash|throw simulates a failure, so every
@@ -62,11 +70,16 @@ static bool debug_fault(const char*) { return false; }
 
 static void lock_now(const char* why) {
     if (!g_lockArmed.load() || g_lockDone.exchange(true)) return;
-    if (lock_dry_run()) { LOGI("LOCK_DRYRUN: would lock now (%s)", why); return; }
+    if (lock_dry_run()) {
+        g_lockSucceeded.store(true);
+        LOGI("LOCK_DRYRUN: would lock now (%s)", why);
+        return;
+    }
     // Lock first, log after: this also runs from crash handlers, where the log
     // file could be in a broken state.
     const BOOL ok = LockWorkStation();
     const DWORD err = ok ? 0 : GetLastError();
+    g_lockSucceeded.store(ok != FALSE);
     // Our window is still up and covering the screen here, so Windows switches
     // to the lock screen over it with no flash of the unlocked desktop. The short
     // wait lets the secure desktop come up while the last frame is still shown.
@@ -85,7 +98,7 @@ static void on_abort_signal(int) { lock_now("abort"); }
 // An exception escaping the main thread.
 static void on_terminate() {
     lock_now("unexpected error");
-    std::_Exit(3);
+    std::_Exit(lock_exit_code(3));
 }
 
 static void arm_lock_on_exit() {
@@ -95,6 +108,80 @@ static void arm_lock_on_exit() {
     std::set_terminate(on_terminate);
 }
 
+// ---------------------------------------------------------------------------
+// /lock watchdog. The handlers above can't run if the saver is force-killed or
+// hits a fault Windows ends immediately (heap corruption, stack overflow). So a
+// /s /lock saver also starts a hidden copy of itself that just waits for the
+// saver to exit and locks the PC unless the saver reported (exit code 0) that it
+// already locked it. It has no window and no console, and it gets an inherited
+// process handle rather than a PID, so a recycled PID can't fool it.
+// ---------------------------------------------------------------------------
+static void start_lock_watchdog() {
+    HANDLE self = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &self,
+                         SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, TRUE, 0)) {
+        LOGI("Lock watchdog: DuplicateHandle failed (%lu)", GetLastError());
+        return;
+    }
+    // Let the child inherit only that one handle.
+    SIZE_T attrSize = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attrSize);
+    std::vector<unsigned char> attrBuf(attrSize);
+    auto* attrs = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attrBuf.data());
+    if (!InitializeProcThreadAttributeList(attrs, 1, 0, &attrSize)) {
+        LOGI("Lock watchdog: attribute list failed (%lu)", GetLastError());
+        CloseHandle(self);
+        return;
+    }
+    if (UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                  &self, sizeof(self), nullptr, nullptr)) {
+        const std::wstring exe = exe_path();
+        std::wstring cmd = L"\"" + exe + L"\" /lockwatch " +
+                           std::to_wstring((unsigned long long)(uintptr_t)self);
+        STARTUPINFOEXW si{};
+        si.StartupInfo.cb = sizeof(si);
+        si.lpAttributeList = attrs;
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, TRUE,
+                           EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr,
+                           &si.StartupInfo, &pi)) {
+            LOGI("Lock watchdog started (pid %lu)", pi.dwProcessId);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        } else {
+            LOGI("Lock watchdog: CreateProcess failed (%lu)", GetLastError());
+        }
+    } else {
+        LOGI("Lock watchdog: handle list failed (%lu)", GetLastError());
+    }
+    DeleteProcThreadAttributeList(attrs);
+    CloseHandle(self);   // the child has its own copy
+}
+
+static int run_lock_watchdog(unsigned long long rawHandle) {
+    HANDLE saver = (HANDLE)(uintptr_t)rawHandle;
+    // Reject anything that isn't a real handle to another process (including the
+    // "current process" pseudo-handle, which would wait forever). When in doubt,
+    // lock: this mode only ever exists to make sure the PC ends up locked.
+    const DWORD saverPid = (rawHandle == ~0ull) ? 0 : GetProcessId(saver);
+    DWORD code = 1;
+    if (saverPid == 0 || saverPid == GetCurrentProcessId()) {
+        LOGI("Watchdog: invalid saver handle - locking");
+    } else {
+        LOGI("Watchdog: watching saver pid %lu", saverPid);
+        if (WaitForSingleObject(saver, INFINITE) != WAIT_OBJECT_0 ||
+            !GetExitCodeProcess(saver, &code))
+            code = 1;
+        CloseHandle(saver);
+        LOGI("Watchdog: saver exited with code %lu", code);
+        if (code == 0) return 0;   // the saver locked the PC itself
+    }
+    if (lock_dry_run()) { LOGI("LOCK_DRYRUN: watchdog would lock now"); return 0; }
+    if (LockWorkStation()) LOGI("Watchdog: locked the workstation");
+    else                   LOGI("Watchdog: LockWorkStation FAILED (%lu)", GetLastError());
+    return 0;
+}
+
 // If the saver never became the active window it can't see key presses, which
 // would go to whatever app is behind it instead. With /lock, give it a moment
 // to get focus, then lock rather than keep covering a desktop that typing can
@@ -102,16 +189,25 @@ static void arm_lock_on_exit() {
 static constexpr double kFocusGraceSec = 2.0;
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+    AppOptions opts = parse_command_line();
+
+    if (opts.lockWatchHandle) {          // hidden /lock watchdog (own log file)
+        log_init(L"RoomSaver-watchdog.log");
+        return run_lock_watchdog(opts.lockWatchHandle);
+    }
+
     log_init();
     // Real pixel coordinates on scaled / mixed-DPI setups (monitor rects, window size).
     enable_dpi_awareness();
-    AppOptions opts = parse_command_line();
 
     if (opts.mode == Mode::Config)
         return run_config_dialog();
 
     const bool lockOnExit = opts.lockOnExit && opts.mode == Mode::FullScreen;
-    if (lockOnExit) arm_lock_on_exit();
+    if (lockOnExit) {
+        arm_lock_on_exit();
+        start_lock_watchdog();
+    }
 
     // Load user settings (registry) and hand them to the engine before init.
     Settings settings = Settings::load();
@@ -135,7 +231,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         LOGI("Platform creation failed");
         lock_now("startup failed");
         platform.destroy();
-        return 1;
+        return lock_exit_code(1);
     }
 
     App app;
@@ -153,7 +249,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
         lock_now("startup failed");
         app.shutdown();
         platform.destroy();
-        return 1;
+        return lock_exit_code(1);
     }
 
     LARGE_INTEGER freq, start, prev;
@@ -226,8 +322,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     // lock_now). Locking at *startup* would instead hide the scene behind the
     // lock screen, so we lock the instant the saver is dismissed.
     lock_now("dismissed");
+    if (opts.mode == Mode::FullScreen && platform.quitReason)
+        LOGI("Screensaver ended: %s", platform.quitReason);
 
     app.shutdown();
     platform.destroy();
-    return 0;
+    return lock_exit_code(0);
 }

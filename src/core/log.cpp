@@ -8,13 +8,13 @@
 
 static FILE* g_logFile = nullptr;
 
-void log_init() {
+void log_init(const wchar_t* fileName) {
     if (g_logFile) return;
     wchar_t tmp[MAX_PATH];
     DWORD n = GetTempPathW(MAX_PATH, tmp);
     if (n == 0 || n > MAX_PATH) return;
     wchar_t path[MAX_PATH];
-    _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%sRoomSaver.log", tmp);
+    _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s%s", tmp, fileName);
     // Deny other writers but allow shared *reads* so the log can be tailed while
     // the app is still running.
     g_logFile = _wfsopen(path, L"w", _SH_DENYWR);

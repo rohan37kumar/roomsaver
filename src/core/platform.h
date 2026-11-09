@@ -18,6 +18,9 @@ struct AppOptions {
     bool selftest = false;          // render one frame, screenshot, exit
     std::wstring selftestOut;       // screenshot path for selftest
     bool lockOnExit = false;        // /lock : lock the workstation when the saver ends
+    // Internal (/lockwatch <handle>): run as the hidden /lock watchdog for the
+    // saver process whose inherited handle this is. 0 = not a watchdog.
+    unsigned long long lockWatchHandle = 0;
     int width  = 1280;
     int height = 720;
     // FullScreen only: monitor rects (virtual-screen coords) that show the room.
@@ -39,6 +42,9 @@ struct Platform {
     // FullScreen mode, losing activation after that ends the saver, like any
     // other input: otherwise keystrokes would go to a hidden app behind it.
     bool  everActive = false;
+
+    // Why the window asked to quit (for the log), e.g. "key pressed".
+    const char* quitReason = nullptr;
 
     // Set to true when a client rect change was detected (consume + reset).
     bool  resized = false;

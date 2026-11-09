@@ -52,8 +52,8 @@ Don't copy the lone `.scr` into `System32`: its assets wouldn't be there.
 
 `RoomSaver-Secure.bat` runs `RoomSaver.exe /s /lock`. It shows the scene fullscreen
 and **locks the PC** the moment you dismiss it. If RoomSaver can't start, crashes,
-or loses keyboard focus to another window, it locks too, and the `.bat` locks once
-more after it exits as a backup.
+loses keyboard focus to another window, or is closed some other way, it locks too
+(a small hidden helper process watches it for the cases it can't catch itself).
 
 1. Right-click `RoomSaver-Secure.bat` → **Show more options** → **Create shortcut**.
 2. Drag that shortcut onto your **Desktop**.

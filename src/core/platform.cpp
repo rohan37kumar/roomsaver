@@ -124,7 +124,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
     case WM_CLOSE:
     case WM_DESTROY:
-        self->shouldQuit = true;
+        self->shouldQuit = true; if (!self->quitReason) self->quitReason = "window closed";
         PostQuitMessage(0);
         return 0;
 
@@ -137,11 +137,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     // keys would reach it unseen (and never dismiss us), so treat it as input.
     case WM_ACTIVATE:
         if (LOWORD(wp) != WA_INACTIVE) self->everActive = true;
-        else if (saver && self->everActive) { self->shouldQuit = true; PostQuitMessage(0); }
+        else if (saver && self->everActive) { self->shouldQuit = true; self->quitReason = "another window was activated"; PostQuitMessage(0); }
         break;
     case WM_ACTIVATEAPP:
         if (wp) self->everActive = true;
-        else if (saver && self->everActive) { self->shouldQuit = true; PostQuitMessage(0); }
+        else if (saver && self->everActive) { self->shouldQuit = true; self->quitReason = "another app was activated"; PostQuitMessage(0); }
         break;
 
     // --- input dismisses the screensaver in fullscreen mode ---
@@ -152,7 +152,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             POINT pt{ (SHORT)LOWORD(lp), (SHORT)HIWORD(lp) };
             if (!havePrev) { prev = pt; havePrev = true; }
             else if (abs(pt.x - prev.x) > 6 || abs(pt.y - prev.y) > 6) {
-                self->shouldQuit = true; PostQuitMessage(0);
+                self->shouldQuit = true; self->quitReason = "mouse moved"; PostQuitMessage(0);
             }
         }
         return 0;
@@ -165,7 +165,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_XBUTTONDOWN:
     case WM_MOUSEWHEEL:
     case WM_MOUSEHWHEEL:
-        if (saver) { self->shouldQuit = true; PostQuitMessage(0); }
+        if (saver) { self->shouldQuit = true; self->quitReason = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) ? "key pressed" : "mouse button/wheel"; PostQuitMessage(0); }
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -352,6 +352,10 @@ AppOptions parse_command_line() {
                                                        : L"selftest.png";
         } else if (a == L"/lock" || a == L"-lock" || a == L"--lock") {
             o.lockOnExit = true;        // pairs with /s: lock the PC on dismissal
+        } else if (a == L"/lockwatch") {
+            // Internal: started by a /s /lock saver as its hidden watchdog.
+            if (i + 1 < argc) o.lockWatchHandle = _wcstoui64(argv[++i], nullptr, 10);
+            if (!o.lockWatchHandle) o.lockWatchHandle = ~0ull;   // malformed: still a watchdog
         } else if (a[0] == L'/' || a[0] == L'-') {
             wchar_t f = a.size() > 1 ? a[1] : 0;
             if (f == L's') {
